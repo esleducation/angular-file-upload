@@ -47,8 +47,8 @@ module
     })
 
 
-    .factory('FileUploader', ['fileUploaderOptions', '$rootScope', '$http', '$window', '$compile',
-        function(fileUploaderOptions, $rootScope, $http, $window, $compile) {
+    .factory('FileUploader', ['fileUploaderOptions', '$rootScope', '$http', '$window', '$compile', '$q',
+        function(fileUploaderOptions, $rootScope, $http, $window, $compile, $q) {
             /**
              * Creates an instance of FileUploader
              * @param {Object} [options]
@@ -87,28 +87,34 @@ module
                 var arrayOfFilters = this._getFilters(filters);
                 var count = this.queue.length;
                 var addedFileItems = [];
+                var $this = this;
 
                 angular.forEach(list, function(some /*{File|HTMLInputElement|Object}*/) {
-                    var temp = new FileUploader.FileLikeObject(some);
+                    var that = this;
 
-                    if (this._isValidFile(temp, arrayOfFilters, options)) {
-                        var fileItem = new FileUploader.FileItem(this, some, options);
-                        addedFileItems.push(fileItem);
-                        this.queue.push(fileItem);
-                        this._onAfterAddingFile(fileItem);
-                    } else {
-                        var filter = this.filters[this._failFilterIndex];
-                        this._onWhenAddingFileFailed(temp, filter, options);
-                    }
+                    this._isValidFile(some, arrayOfFilters, options).then(function(valid){
+                        if(valid) {
+                            var fileItem = new FileUploader.FileItem(that, some, options);
+                            addedFileItems.push(fileItem);
+                            that.queue.push(fileItem);
+                            that._onAfterAddingFile(fileItem);
+                        } else {
+                            var filter = that.filters[that._failFilterIndex];
+                            that._onWhenAddingFileFailed(some, filter, options);
+                        }
+
+                        // All files processed
+                        if(addedFileItems.length === list.length) {
+                            if($this.queue.length !== count) {
+                                $this._onAfterAddingAll(addedFileItems);
+                                $this.progress = $this._getTotalProgress();
+                            }
+
+                            $this._render();
+                            if ($this.autoUpload) $this.uploadAll();
+                        }
+                    });
                 }, this);
-
-                if(this.queue.length !== count) {
-                    this._onAfterAddingAll(addedFileItems);
-                    this.progress = this._getTotalProgress();
-                }
-
-                this._render();
-                if (this.autoUpload) this.uploadAll();
             };
             /**
              * Remove items from the queue. Remove last: index = -1
@@ -383,10 +389,41 @@ module
              */
             FileUploader.prototype._isValidFile = function(file, filters, options) {
                 this._failFilterIndex = -1;
-                return !filters.length ? true : filters.every(function(filter) {
+
+                var processedFilters = 0;
+                var success = true;
+                var deferred = $q.defer();
+
+                if ( ! filters.length) {
+                    return true;
+                }
+
+                angular.forEach(filters, function(filter){
                     this._failFilterIndex++;
-                    return filter.fn.call(this, file, options);
-                }, this);
+                    var response = filter.fn.call(this, file, options);
+
+                    // Promise
+                     if(response && angular.isFunction(response.then)) {
+                        response.then(function(pass){
+                            success = success & pass;
+
+                            if(++processedFilters === filters.length) {
+                                //console.log('i do defer async', filter, success);
+                                deferred.resolve(success);
+                            }
+                        });
+                    // Sync function
+                    } else {
+                        success = success & response;
+
+                        if(++processedFilters === filters.length) {
+                            //console.log('i do defer', filter, success);
+                            deferred.resolve(success);
+                        }
+                    }
+                });
+
+                return deferred.promise;
             };
             /**
              * Checks whether upload successful
@@ -741,6 +778,7 @@ module
                 var postfix = angular.isString(fakePathOrObject) ? 'FakePath' : 'Object';
                 var method = '_createFrom' + postfix;
                 this[method](fakePathOrObject);
+                this.file = fakePathOrObject
             }
 
             /**

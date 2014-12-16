@@ -59,7 +59,6 @@ module
                 angular.extend(this, settings, options, {
                     isUploading: false,
                     _nextIndex: 0,
-                    _failFilterIndex: -1,
                     _directives: {select: [], drop: [], over: []}
                 });
 
@@ -92,15 +91,14 @@ module
                 angular.forEach(list, function(some /*{File|HTMLInputElement|Object}*/) {
                     var that = this;
 
-                    this._isValidFile(some, arrayOfFilters, options).then(function(valid){
-                        if(valid) {
+                    this._isValidFile(some, arrayOfFilters, options).then(function(data){
+                        if(data.valid) {
                             var fileItem = new FileUploader.FileItem(that, some, options);
                             addedFileItems.push(fileItem);
                             that.queue.push(fileItem);
                             that._onAfterAddingFile(fileItem);
                         } else {
-                            var filter = that.filters[that._failFilterIndex];
-                            that._onWhenAddingFileFailed(some, filter, options);
+                            that._onWhenAddingFileFailed(some, data.filter, options);
                         }
 
                         // All files processed
@@ -388,8 +386,6 @@ module
              * @private
              */
             FileUploader.prototype._isValidFile = function(file, filters, options) {
-                this._failFilterIndex = -1;
-
                 var processedFilters = 0;
                 var success = true;
                 var deferred = $q.defer();
@@ -399,28 +395,26 @@ module
                 }
 
                 angular.forEach(filters, function(filter){
-                    this._failFilterIndex++;
                     var response = filter.fn.call(this, file, options);
 
-                    // Promise
-                     if(response && angular.isFunction(response.then)) {
-                        response.then(function(pass){
-                            success = success & pass;
+                    var processResponse = function(pass){
+                        success = success & pass;
 
-                            if(++processedFilters === filters.length) {
-                                //console.log('i do defer async', filter, success);
-                                deferred.resolve(success);
-                            }
-                        });
-                    // Sync function
-                    } else {
-                        success = success & response;
-
-                        if(++processedFilters === filters.length) {
-                            //console.log('i do defer', filter, success);
-                            deferred.resolve(success);
+                        if(! success || ++processedFilters === filters.length) {
+                            deferred.resolve({
+                                valid : success,
+                                filter : filter,
+                                file : file
+                            });
                         }
                     }
+
+                    // Promise
+                    if(response && angular.isFunction(response.then))
+                        response.then(processResponse)
+                    // Sync function
+                    else
+                        processResponse(response);
                 });
 
                 return deferred.promise;
